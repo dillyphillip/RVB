@@ -140,7 +140,13 @@ def format_discord_message(df, message_type, content, timestamp=None):
     time_str = est_time.strftime('%I:%M %p EST')
     sunday_count = get_sunday_count(df)
     #return f"\n---------------\n**Update at {time_str}**\n**Current Sunday Signups: {sunday_count}**\n\n{content}\n---------------"
-    return f"\n**Update at {time_str}**\n**Current Sunday Signups: {sunday_count}**\n\n{content}\n---------------"
+    return (
+    f"\n```ini\n"
+    f"[Update at {time_str}]\n"
+    f"```\n"
+    f"**Current Sunday Signups: {sunday_count}**\n\n"
+    f"{content}\n "
+)
 
 def get_row_key(row):
     """Create a unique identifier for each row."""
@@ -195,6 +201,15 @@ def compare_dataframes(old_df, new_df):
                     question_answer = new_row.get(col, '')
                     break
             
+            # Find the "Leave any questions" column
+            comments_col = None
+            comments_answer = None
+            for col in new_row.index:
+                if "Leave any questions" in str(col):
+                    comments_col = col
+                    comments_answer = new_row.get(col, '')
+                    break
+            
             # Get church attendee status
             attendee_status = new_row.get("Are you a Renewal Church church attendee or a guest?", '')
             
@@ -204,10 +219,24 @@ def compare_dataframes(old_df, new_df):
             if attendee_status and str(attendee_status).strip():
                 content_parts.append(f"**Status:** {attendee_status}")
             
+            # NEW: include dynamic Sunday playing response
+            sunday_col = next((col for col in new_row.index if 'are you playing sunday' in str(col).lower()), None)
+            if sunday_col:
+                sunday_val = new_row.get(sunday_col, '')
+                if pd.isna(sunday_val) or str(sunday_val).strip() == '':
+                    sunday_val = 'No response'
+                content_parts.append(f"**Are you playing Sunday:** {sunday_val}")
+            
             if question_answer and str(question_answer).strip():
                 # Extract just the question part after "Question of the Week: "
                 question_text = question_col.replace("Question of the Week: ", "") if question_col else "Question of the Week"
                 content_parts.append(f"**{question_text}:** {question_answer}")
+            
+            # Add comments field
+            if comments_answer and str(comments_answer).strip():
+                content_parts.append(f"**Comments:** {comments_answer}")
+            else:
+                content_parts.append(f"**Comments:** None")
             
             content = "\n".join(content_parts)
             msg = format_discord_message(new_df, "new", content, current_time)
@@ -220,7 +249,7 @@ def compare_dataframes(old_df, new_df):
                 continue
 
             full_name = new_row.get("What's your name? (first & last)", 'Unknown Person')
-            update_details = [f"**{full_name}** (updated)"]
+            update_details = [f"**{full_name}** "]
             
             for col in new_row.index:
                 old_val = old_row.get(col, pd.NA)
