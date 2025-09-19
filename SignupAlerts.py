@@ -142,55 +142,112 @@ def format_discord_message(df, message_type, content, timestamp=None):
     #return f"\n---------------\n**Update at {time_str}**\n**Current Sunday Signups: {sunday_count}**\n\n{content}\n---------------"
     return f"\n**Update at {time_str}**\n**Current Sunday Signups: {sunday_count}**\n\n{content}\n---------------"
 
+def get_row_key(row):
+    """Create a unique identifier for each row."""
+    name = row.get("What's your name? (first & last)", '')
+    if pd.isna(name) or str(name).strip() == '':
+        return None
+    
+    # Option 1: Use just name (if names are unique)
+    return str(name).strip()
+    
+    # Option 2: Use name + timestamp (if there's a timestamp column)
+    # timestamp = row.get("Timestamp", '')
+    # return f"{str(name).strip()}_{str(timestamp).strip()}"
+
 def compare_dataframes(old_df, new_df):
     """
-    Compare row-by-row (positional) and send updates to Discord.
-    If rows can be reordered or deleted, consider switching to a key-based diff.
+    Compare based on row identity (name) rather than position.
+    This prevents false alerts when rows are reordered/filtered.
     """
     messages_to_send = []
     current_time = datetime.utcnow()
 
-    # Ensure old_df has same columns to avoid spurious diffs
+    # Handle empty old_df
     if old_df is None or old_df.empty:
-        old_df = pd.DataFrame(columns=new_df.columns)
+        old_df = pd.DataFrame(columns=new_df.columns if not new_df.empty else [])
 
-    for idx in range(len(new_df)):
-        new_row = new_df.iloc[idx]
-        # create an empty aligned series if old row missing
-        if idx < len(old_df):
-            old_row = old_df.iloc[idx].reindex(new_row.index)
+    # Create dictionaries keyed by row identity
+    old_rows = {}
+    for idx, row in old_df.iterrows():
+        key = get_row_key(row)
+        if key:
+            old_rows[key] = row
+
+    new_rows = {}
+    for idx, row in new_df.iterrows():
+        key = get_row_key(row)
+        if key:
+            new_rows[key] = row
+
+    # Check for new entries and changes
+    for key, new_row in new_rows.items():
+        if key not in old_rows:
+            # Truly new entry
+            full_name = new_row.get("What's your name? (first & last)", 'Unknown Person')
+            
+            # Find the "Question of the Week" column
+            question_col = None
+            question_answer = None
+            for col in new_row.index:
+                if "Question of the Week" in str(col):
+                    question_col = col
+                    question_answer = new_row.get(col, '')
+                    break
+            
+            # Get church attendee status
+            attendee_status = new_row.get("Are you a Renewal Church church attendee or a guest?", '')
+            
+            # Build the message content
+            content_parts = [f"**New signup: {full_name}**"]
+            
+            if attendee_status and str(attendee_status).strip():
+                content_parts.append(f"**Status:** {attendee_status}")
+            
+            if question_answer and str(question_answer).strip():
+                # Extract just the question part after "Question of the Week: "
+                question_text = question_col.replace("Question of the Week: ", "") if question_col else "Question of the Week"
+                content_parts.append(f"**{question_text}:** {question_answer}")
+            
+            content = "\n".join(content_parts)
+            msg = format_discord_message(new_df, "new", content, current_time)
+            messages_to_send.append(msg)
         else:
-            old_row = pd.Series(index=new_row.index, dtype=object)
-
-        # If identical, continue
-        if old_row.equals(new_row):
-            continue
-
-        full_name = new_row.get("What's your name? (first & last)", 'Unknown Person')
-        if pd.isna(full_name) or str(full_name).strip() == '':
-            continue
-
-        update_details = [f"**{full_name}**"]
-        for col in new_row.index:
-            old_val = old_row.get(col, pd.NA)
-            new_val = new_row[col]
-
-            old_is_nan = pd.isna(old_val)
-            new_is_nan = pd.isna(new_val)
-            if old_is_nan and new_is_nan:
+            # Existing entry - check for changes
+            old_row = old_rows[key].reindex(new_row.index)
+            
+            if old_row.equals(new_row):
                 continue
 
-            # changed if one is NaN and other isn't, or values differ
-            if (old_is_nan != new_is_nan) or (not old_is_nan and not new_is_nan and old_val != new_val):
-                old_str = "" if old_is_nan else str(old_val)
-                new_str = "" if new_is_nan else str(new_val)
-                if old_str.strip() == "" and new_str.strip() == "":
-                    continue
-                update_details.append(f"{col}: {old_str} \u2192 {new_str}")  # nice arrow
+            full_name = new_row.get("What's your name? (first & last)", 'Unknown Person')
+            update_details = [f"**{full_name}** (updated)"]
+            
+            for col in new_row.index:
+                old_val = old_row.get(col, pd.NA)
+                new_val = new_row[col]
 
-        if len(update_details) > 1:
-            msg = format_discord_message(new_df, "update", "\n".join(update_details), current_time)
-            messages_to_send.append(msg)
+                old_is_nan = pd.isna(old_val)
+                new_is_nan = pd.isna(new_val)
+                if old_is_nan and new_is_nan:
+                    continue
+
+                if (old_is_nan != new_is_nan) or (not old_is_nan and not new_is_nan and old_val != new_val):
+                    old_str = "" if old_is_nan else str(old_val)
+                    new_str = "" if new_is_nan else str(new_val)
+                    if old_str.strip() == "" and new_str.strip() == "":
+                        continue
+                    update_details.append(f"{col}: {old_str} \u2192 {new_str}")
+
+            if len(update_details) > 1:
+                msg = format_discord_message(new_df, "update", "\n".join(update_details), current_time)
+                messages_to_send.append(msg)
+
+    # Optional: Check for deleted entries
+    # for key in old_rows:
+    #     if key not in new_rows:
+    #         full_name = old_rows[key].get("What's your name? (first & last)", 'Unknown Person')
+    #         msg = format_discord_message(new_df, "delete", f"**{full_name}** removed their signup", current_time)
+    #         messages_to_send.append(msg)
 
     for message in messages_to_send:
         send_message(BOT_TOKEN, CHANNEL_ID, message)
