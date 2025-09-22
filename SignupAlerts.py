@@ -4,11 +4,13 @@ from google.oauth2.service_account import Credentials
 import pandas as pd
 import gspread
 import time
-from datetime import datetime
+from datetime import datetime, timezone  # added timezone
 import requests
 import pytz
 import os
 import re
+import logging
+from pathlib import Path
 
 # ---------- Pandas display (optional) ----------
 pd.set_option('display.max_columns', None)
@@ -24,6 +26,23 @@ CHANNEL_ID = '1418330829595217992'  # Make sure this is the correct channel ID
 # BOT_TOKEN = BOT_TOKEN or "YOUR_BOT_TOKEN"
 # CHANNEL_ID = CHANNEL_ID or "YOUR_CHANNEL_ID"
 
+# ---------- Logging setup ----------
+def setup_logging():
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+    log_filename = datetime.now().strftime("%m_%d_%Y_%H_%M.log")
+    log_path = logs_dir / log_filename
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.FileHandler(log_path),
+            logging.StreamHandler()
+        ]
+    )
+    logging.info(f"Logging initialized -> {log_path}")
+    return log_path
+
 def send_message(token, channel_id, content):
     if not token or not channel_id:
         print("Discord token or channel_id missing. Skipping message send.")
@@ -37,9 +56,9 @@ def send_message(token, channel_id, content):
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=15)
         if response.status_code in (200, 201):
-            print("Message sent successfully!")
+            logging.info("Discord message sent successfully")
         else:
-            print(f"Failed to send message: {response.status_code}")
+            logging.error(f"Discord send failed status={response.status_code}")
             try:
                 print(f"Error details: {response.json()}")
             except Exception:
@@ -50,7 +69,7 @@ def send_message(token, channel_id, content):
             print("3. Bot has access to the channel")
             print("4. Bot has message sending permissions")
     except Exception as e:
-        print(f"Error sending message: {str(e)}")
+        logging.exception(f"Error sending Discord message: {str(e)}")
 
 # ---------- Google APIs config ----------
 SCOPES = [
@@ -81,14 +100,14 @@ def list_folder_contents(folder_id):
         ).execute()
         items = results.get('files', [])
         if not items:
-            print('No files found in the folder.')
+            logging.warning('No files found in the folder.')
         else:
-            print('Files in the folder:')
+            logging.info(f'Found {len(items)} files in folder {folder_id}')
             for item in items:
-                print(f"{item['name']} ({item['id']})")
+                logging.debug(f"File: {item['name']} ({item['id']}) created={item.get('createdTime')}")
         return items
     except HttpError as error:
-        print(f'An error occurred: {error}')
+        logging.exception(f'An error occurred listing folder: {error}')
         return []
 
 def get_spreadsheet_data(file_id):
@@ -109,9 +128,11 @@ def get_spreadsheet_data(file_id):
         if not df.empty:
             df = df[~df.apply(lambda row: row.astype(str).str.contains('|'.join(keywords), case=False, na=False).any(), axis=1)]
 
+        logging.info(f"Loaded spreadsheet rows={len(df)} cols={list(df.columns)} file_id={file_id}")
+        logging.debug(f"\nDataFrame snapshot:\n{df}")
         return df.reset_index(drop=True)
     except Exception as error:
-        print(f'An error occurred while retrieving the spreadsheet: {error}')
+        logging.exception(f'Error retrieving spreadsheet: {error}')
         return pd.DataFrame()
 
 def get_sunday_column(df):
@@ -124,7 +145,7 @@ def get_sunday_column(df):
 
 def get_sunday_count(df):
     col = get_sunday_column(df)
-    if col and col in df.columns and not df.empty:
+    if (col and col in df.columns and not df.empty):
         return df[col].astype(str).str.lower().str.contains(r'\by(es)?\b').sum()
     return 0
 
@@ -133,7 +154,7 @@ def format_discord_message(df, message_type, content, timestamp=None):
     est = pytz.timezone('US/Eastern')
     # Normalize timestamp
     if timestamp is None:
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)  # replaced deprecated utcnow
     if timestamp.tzinfo is None:
         timestamp = pytz.utc.localize(timestamp)
     est_time = timestamp.astimezone(est)
@@ -167,7 +188,8 @@ def compare_dataframes(old_df, new_df):
     This prevents false alerts when rows are reordered/filtered.
     """
     messages_to_send = []
-    current_time = datetime.utcnow()
+    # Replace deprecated datetime.utcnow()
+    current_time = datetime.now(timezone.utc)
 
     # Handle empty old_df
     if old_df is None or old_df.empty:
@@ -315,12 +337,14 @@ def pick_latest_responses_file_id(items):
     return latest_row['id']
 
 if __name__ == '__main__':
+    setup_logging()  # initialize logging; creates logs/<timestamp>.log in current working dir
     # -------- USER: set this folder_id --------
     folder_id = '1QrLMuE-TA6caaaXoozkqdTuv81CIavO-'  # Replace with your folder ID
 
     # -------- Initial load --------
     filelist = list_folder_contents(folder_id)
     latest_file_id = pick_latest_responses_file_id(filelist)
+    logging.info(f"Monitoring spreadsheet id={latest_file_id}")
     if not latest_file_id:
         raise SystemExit("Could not locate a 'Responses' spreadsheet in the folder.")
 
