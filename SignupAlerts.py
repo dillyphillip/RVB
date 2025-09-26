@@ -136,10 +136,11 @@ def get_spreadsheet_data(file_id):
         return pd.DataFrame()
 
 def get_sunday_column(df):
-    """Find the Sunday sign-up column even if wording changes slightly."""
+    """Find the Sunday sign-up column dynamically, ignoring the date suffix."""
     if df is None or df.empty:
         return None
     lower_cols = {col.lower(): col for col in df.columns}
+    # Match columns containing "Are you playing Sunday" (case-insensitive)
     candidates = [orig for low, orig in lower_cols.items() if "are you playing sunday" in low]
     return candidates[0] if candidates else None
 
@@ -270,26 +271,21 @@ def compare_dataframes(old_df, new_df):
             if old_row.equals(new_row):
                 continue
 
-            full_name = new_row.get("What's your name? (first & last)", 'Unknown Person')
-            update_details = [f"**{full_name}** "]
-            
-            for col in new_row.index:
-                old_val = old_row.get(col, pd.NA)
-                new_val = new_row[col]
+            # Restrict updates to the "Are you playing Sunday?" column
+            sunday_col = get_sunday_column(new_df)
+            if not sunday_col or sunday_col not in new_row.index:
+                continue
 
-                old_is_nan = pd.isna(old_val)
-                new_is_nan = pd.isna(new_val)
-                if old_is_nan and new_is_nan:
-                    continue
+            old_val = old_row.get(sunday_col, pd.NA)
+            new_val = new_row[sunday_col]
 
-                if (old_is_nan != new_is_nan) or (not old_is_nan and not new_is_nan and old_val != new_val):
-                    old_str = "" if old_is_nan else str(old_val)
-                    new_str = "" if new_is_nan else str(new_val)
-                    if old_str.strip() == "" and new_str.strip() == "":
-                        continue
-                    update_details.append(f"{col}: {old_str} \u2192 {new_str}")
-
-            if len(update_details) > 1:
+            old_is_nan = pd.isna(old_val)
+            new_is_nan = pd.isna(new_val)
+            if (old_is_nan != new_is_nan) or (not old_is_nan and not new_is_nan and old_val != new_val):
+                full_name = new_row.get("What's your name? (first & last)", 'Unknown Person')
+                old_str = "" if old_is_nan else str(old_val)
+                new_str = "" if new_is_nan else str(new_val)
+                update_details = [f"**{full_name}** ", f"{sunday_col}: {old_str} \u2192 {new_str}"]
                 msg = format_discord_message(new_df, "update", "\n".join(update_details), current_time)
                 messages_to_send.append(msg)
 
