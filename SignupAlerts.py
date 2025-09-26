@@ -174,14 +174,11 @@ def get_row_key(row):
     """Create a unique identifier for each row."""
     name = row.get("What's your name? (first & last)", '')
     if pd.isna(name) or str(name).strip() == '':
+        logging.warning("Row skipped due to missing name: %s", row)
         return None
-    
-    # Option 1: Use just name (if names are unique)
-    return str(name).strip()
-    
-    # Option 2: Use name + timestamp (if there's a timestamp column)
-    # timestamp = row.get("Timestamp", '')
-    # return f"{str(name).strip()}_{str(timestamp).strip()}"
+    key = str(name).strip()
+    logging.debug("Generated row key: %s", key)
+    return key
 
 def compare_dataframes(old_df, new_df):
     """
@@ -208,6 +205,10 @@ def compare_dataframes(old_df, new_df):
         key = get_row_key(row)
         if key:
             new_rows[key] = row
+
+    logging.info("Comparing dataframes...")
+    logging.debug("Old DataFrame:\n%s", old_df)
+    logging.debug("New DataFrame:\n%s", new_df)
 
     # Check for new entries and changes
     for key, new_row in new_rows.items():
@@ -301,8 +302,8 @@ def compare_dataframes(old_df, new_df):
 
 def pick_latest_responses_file_id(items):
     """
-    Your original logic: pick the file whose name contains 'Responses' and has the
-    latest mm/dd in the name. If that fails, fallback to createdTime.
+    Dynamically pick the latest 'Responses' file based on the date in the name.
+    If no valid date is found, fallback to createdTime.
     """
     if not items:
         return None
@@ -312,24 +313,27 @@ def pick_latest_responses_file_id(items):
     df = df[df['name'].str.contains('Responses', na=False)]
 
     if df.empty:
-        # fallback
+        # Fallback to createdTime if no 'Responses' files are found
         latest = get_latest_responses_file(items)
         return latest['id'] if latest else None
 
     # Extract mm/dd from name and parse with current year as default
-    # Example expected pattern: "... 9/18 ..."
+    # Example expected pattern: "... 9/28 ..." or "... 10/5 ..."
     date_str = df['name'].str.extract(r'(\d{1,2}/\d{1,2})', expand=False)
-    # Parse with current year assumption
     this_year = datetime.now().year
     parsed_dates = []
+
     for s in date_str.fillna("1/1"):
         try:
             m, d = map(int, s.split('/'))
             parsed_dates.append(datetime(this_year, m, d))
         except Exception:
-            parsed_dates.append(datetime(this_year, 1, 1))
+            # Default to a very old date if parsing fails
+            parsed_dates.append(datetime(1900, 1, 1))
+
     df = df.assign(parsed_date=parsed_dates)
     latest_row = df.loc[df['parsed_date'].idxmax()]
+    logging.info(f"Latest 'Responses' file selected: {latest_row['name']}")
     return latest_row['id']
 
 if __name__ == '__main__':
